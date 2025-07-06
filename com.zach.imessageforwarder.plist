@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN"
+        "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+ <dict>
+  <key>Label</key>          <string>com.zach.imessageforwarder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/zach/imessage_forwarder/imessage_email_forwarder.py</string>
+  </array>
+  <key>RunAtLoad</key>      <true/>
+  <key>KeepAlive</key>      <true/>
+  <key>StandardOutPath</key><string>/tmp/imsgfwd.out</string>
+  <key>StandardErrorPath</key><string>/tmp/imsgfwd.err</string>
+ </dict>
+</plist>
