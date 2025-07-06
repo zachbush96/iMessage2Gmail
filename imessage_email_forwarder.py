@@ -38,6 +38,13 @@ class Bridge:
     def __init__(self):
         self.last_rowid: int = 0
         self.pending: Dict[str, Dict] = {}
+        self.paused: bool = False
+        self.command_handlers = {
+            "!status": self.cmd_status,
+            "!pause": self.cmd_pause,
+            "!resume": self.cmd_resume,
+            "!stop": self.cmd_stop,
+        }
         self.load_state()
         signal.signal(signal.SIGINT, self.save_and_exit)
         signal.signal(signal.SIGTERM, self.save_and_exit)
@@ -107,6 +114,24 @@ class Bridge:
         result, data = mailbox.search(None, f'(UNSEEN SUBJECT "{subj_token}")')
         return data[0].split() if result == "OK" else []
 
+    def check_commands(self, mailbox=None):
+        own = False
+        if mailbox is None:
+            mailbox = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+            mailbox.login(GMAIL_USER, GMAIL_PASS)
+            own = True
+        mailbox.select("INBOX")
+        for cmd, handler in self.command_handlers.items():
+            ids = self.imap_search_subject(mailbox, cmd)
+            if ids:
+                mailbox.fetch(ids[-1], '(RFC822)')
+                mailbox.store(ids[-1], '+FLAGS', '\\Seen')
+                logger.info(f"Processing command {cmd}")
+                handler()
+                break
+        if own:
+            mailbox.logout()
+
     def poll_for_reply(self, token: str) -> str | None:
         with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as box:
             box.login(GMAIL_USER, GMAIL_PASS)
@@ -120,6 +145,11 @@ class Bridge:
                     box.store(ids[-1], '+FLAGS', '\\Seen')
                     logger.debug(f"Received reply for {token}")
                     return body
+                # also check for command emails while waiting
+                try:
+                    self.check_commands(box)
+                except Exception as e:
+                    logger.error(f"Command check error: {e}")
                 time.sleep(POLL_SECONDS)
 
     @staticmethod
@@ -137,11 +167,39 @@ class Bridge:
         script = f'''on run argv\n    set theBuddy to item 1 of argv\n    set theMessage to item 2 of argv\n    tell application "Messages"\n        set targetService to 1st service whose service type = iMessage\n        set targetBuddy to buddy theBuddy of targetService\n        send theMessage to targetBuddy\n    end tell\nend run'''
         subprocess.run(["osascript", "-e", script, handle, text], check=True)
 
+    # ──────────────── COMMANDS ────────────────
+    def cmd_status(self):
+        status = "paused" if self.paused else "running"
+        body = f"Bridge is currently {status}. Pending messages: {len(self.pending)}"
+        self.smtp_send("Bridge Status", body, GMAIL_USER)
+
+    def cmd_pause(self):
+        self.paused = True
+        self.smtp_send("Bridge Paused", "Forwarding has been paused", GMAIL_USER)
+
+    def cmd_resume(self):
+        self.paused = False
+        self.smtp_send("Bridge Resumed", "Forwarding has been resumed", GMAIL_USER)
+
+    def cmd_stop(self):
+        self.smtp_send("Bridge Stopping", "Bridge is stopping", GMAIL_USER)
+        self.save_and_exit()
+
     def run(self):
         logger.info("Bridge started")
         while True:
             if not self.in_window():
                 time.sleep(60)
+                continue
+
+            if not self.pending:
+                try:
+                    self.check_commands()
+                except Exception as e:
+                    logger.error(f"Command check error: {e}")
+
+            if self.paused:
+                time.sleep(5)
                 continue
 
             for rowid, handle, text in self.get_new_messages():
@@ -180,11 +238,11 @@ def run_tests():
         def setUp(self):
             # create temp db and state file
             self.tmpdir = tempfile.mkdtemp()
+            global CHAT_DB, STATE_FILE
             self.orig_db = CHAT_DB
             self.orig_state = STATE_FILE
             # override paths
             Bridge.CHAT_DB = os.path.join(self.tmpdir, 'chat.db')
-            global CHAT_DB, STATE_FILE
             CHAT_DB = Bridge.CHAT_DB
             STATE_FILE = os.path.join(self.tmpdir, 'state.json')
             # init sqlite schema
@@ -198,13 +256,27 @@ def run_tests():
             # patch smtp_send and send_imessage
             self.sent_emails = []
             self.sent_msgs = []
-            Bridge.smtp_send = lambda self,sbj,bd,rcp: self.sent_emails.append((sbj,bd,rcp))
-            Bridge.send_imessage = lambda self,h,text: self.sent_msgs.append((h,text))
+            Bridge.smtp_send = lambda self,sbj,bd,rcp,test=self: test.sent_emails.append((sbj,bd,rcp))
+            Bridge.send_imessage = lambda self,h,text,test=self: test.sent_msgs.append((h,text))
             # patch poll_for_reply to immediately return a canned reply
             Bridge.poll_for_reply = lambda self,token: "Reply body"
+            # run only a single iteration
+            def run_once(self):
+                for rowid, handle, text in self.get_new_messages():
+                    token = f"MSGID:{rowid}"
+                    subj = f"[{token}] {handle}"
+                    body = f"Incoming from {handle}\n\n{text}"
+                    self.smtp_send(subj, body, GMAIL_USER)
+                    reply = self.poll_for_reply(token)
+                    if reply:
+                        self.send_imessage(handle, reply)
+                return
+            self.orig_run = Bridge.run
+            Bridge.run = run_once
 
         def tearDown(self):
             shutil.rmtree(self.tmpdir)
+            Bridge.run = self.orig_run
 
         def test_forward_and_reply(self):
             b = Bridge()

@@ -10,6 +10,7 @@ A lightweight Python daemon that forwards incoming iMessages/SMS on macOS to a G
 * **Reply-by-Email:** Polls Gmail for replies to those tokens and sends the email body back as an iMessage/SMS.
 * **On‑Call Scheduling:** Only runs during configured time windows (e.g. Wed/Thu nights and Sunday days).
 * **Persistence & Autostart:** Remembers last processed message ID in `~/.imessage_gmail_state.json` and launches at login via a LaunchAgent plist.
+* **Interactive Commands:** Send `!status`, `!pause`, or `!stop` via email subject to control the bridge remotely.
 * **Test Harness:** Built‑in unit tests (`--test` flag) to validate message detection, email forwarding, and reply loops.
 
 ---
